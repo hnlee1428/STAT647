@@ -1,0 +1,582 @@
+---
+title: "Final project - STAT 647"
+author: "Hana Lee"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Verify if M1 to M4 are valid
+
+M1 and M2 are valid, but M3 and M4 are not valid covariance matrices.
+
+```{r}
+# Model 1 (Valid)
+Sigma.star <- matrix(0, p, p)
+for(k in 1:p){
+  for(l in 1:p){
+    Sigma.star[k, l] <- 0.99^((abs(k-l))^(1/3))
+  }
+}
+
+rho <- matrix(0, p, p)
+for(k in 1:p){
+  for(l in 1:p){
+    rho[k, l] <- Sigma.star[k,l]/sqrt(Sigma.star[k,k]*Sigma.star[l,l])
+  }
+}
+rho 
+
+
+
+# Model 2 (Valid)
+D <- diag(runif(p, 0.5, 2.5))
+D.half <- sqrt(D)
+q <- ceiling(floor(p/10)); q.lower <- 10*(q-1)+1; q.upper <- 10*q
+A <- matrix(0, p, p)
+for(k in 1:p){
+  for(l in 1:p){
+    if(k==l){
+      A[k, l] <- 1
+    }else{
+      if(q.lower <= k & k <= q.upper & q.lower <= l & l <= q.upper){
+        A[k, l] <- 0.55
+      }
+    }
+  }
+}
+Sigma.star <- D.half%*%A%*%D.half
+
+rho <- matrix(0, p, p)
+for(k in 1:p){
+  for(l in 1:p){
+    rho[k, l] <- Sigma.star[k,l]/sqrt(Sigma.star[k,k]*Sigma.star[l,l])
+  }
+}
+rho 
+
+
+
+
+# Model 3 (Invalid)
+H <- 0.85
+rho.alpha <- function(d){
+  return(((d+1)^(2*H) + (d-1)^(2*H) - (2*d)^(2*H))/2)
+}
+Sigma.star <- diag(runif(p, 1, 2))
+for(k in 1:p){
+  for(l in 1:p){
+    if(k!=l){
+      Sigma.star[k, l] <- rho.alpha(abs(k-l))
+    }
+  }
+}
+
+rho <- matrix(0, p, p)
+for(k in 1:p){
+  for(l in 1:p){
+    rho[k, l] <- Sigma.star[k,l]/sqrt(Sigma.star[k,k]*Sigma.star[l,l])
+  }
+}
+sum(abs(rho) > 1)
+
+
+# Model 4 (Invalid)
+FF <- matrix(NA, p, p)
+for(k in 1:p){
+  for(l in 1:p){
+    if(k==l){
+      FF[k,l] <- 1
+      }else{
+      if(k+1 <= p) FF[k, k+1] <- 0.5
+      if(l+1 <= p) FF[l+1, l] <- 0.5
+      }
+  }
+}
+
+FF
+```
+
+
+
+
+
+#### The proposed test and CLX
+
+```{r echo = F, message = F}
+library(tidyverse)
+
+Simulate <- function(X, Y, alpha = 0.05, B = 100){
+  
+#### Procedure to compute T_max_hat ####
+  
+n <- nrow(X); m <- nrow(Y)
+p <- ncol(X); if(ncol(Y)!=p){stop("X and Y must have the same number of columns")}
+X.bar <- matrix(apply(X, 2, mean), nrow = n, ncol = p, byrow = T)
+Y.bar <- matrix(apply(Y, 2, mean), nrow = m, ncol = p, byrow = T)
+
+prod_mat <- function(mat){
+  return(t(mat)%*%(mat))
+}
+# S_X: {sum_i=1^n (X_ik - X.bar_k)(X_il - X.bar_l)} for k, l = 1, ..., p
+CS_X <- prod_mat(X - X.bar)
+# S_Y: {sum_i=1^m (Y_jk - Y.bar_k)(Y_jl - Y.bar_l)} for k, l = 1, ..., p
+CS_Y <- prod_mat(Y - Y.bar)
+
+Sigma1.hat <- CS_X / n # Entry(k,l) is sigma1.hat_kl
+Sigma2.hat <- CS_Y / m # Entry(k,l) is sigma2.hat_kl
+
+s1.hat <- (prod_mat((X - X.bar)^2) - 2*Sigma1.hat* CS_X + n* Sigma1.hat^2)/n
+s2.hat <- (prod_mat((Y - Y.bar)^2) - 2*Sigma2.hat* CS_Y + m* Sigma2.hat^2)/m
+
+num_t <- Sigma1.hat - Sigma2.hat
+den_t <- sqrt(s1.hat/n + s2.hat/m)
+t.hat <- num_t / den_t
+T.hat_max <- max(abs(t.hat))
+
+
+#### Procedure to compute c_alpha ####
+T.hats_max <- function(nn = n, mm = m, 
+                       XX = X, YY = Y, 
+                       XX.bar = X.bar, YY.bar = Y.bar,
+                       in.Sigma1.hat = Sigma1.hat, in.Sigma2.hat = Sigma2.hat,
+                       in.den_t = den_t){
+  g_X <- rnorm(nn, 0, 1)
+  g_Y <- rnorm(mm, 0, 1)
+  
+  Sigma1.hat.B <- t(XX - XX.bar) %*% diag(g_X) %*% (XX - XX.bar)/nn - mean(g_X)*in.Sigma1.hat
+  Sigma2.hat.B <- t(YY - YY.bar) %*% diag(g_Y) %*% (YY - YY.bar)/mm - mean(g_Y)*in.Sigma2.hat
+  
+  num_t.dagger <- Sigma1.hat.B - Sigma2.hat.B
+  t.hat.dagger <- num_t.dagger / in.den_t
+  T.hat.dagger_max <- max(abs(t.hat.dagger))
+  
+  return(T.hat.dagger_max)
+}
+
+
+bootstrap_T_max <- 1:B %>%
+  map(~T.hats_max(n, m)) %>%
+  unlist()
+
+
+c_alpha <- quantile(bootstrap_T_max, 1-alpha)
+p_value <- mean(T.hat_max < bootstrap_T_max)
+reject_null <- (p_value < alpha)
+
+
+
+#### CLX
+M_n <- T.hat_max^2
+q_alpha <- -log(8*pi) - 2*log(log((1-alpha)^(-1))) # (1-alpha) quantile of type I EVD
+p_value_CLX <- 1 - exp(-exp(-(M_n - (4*log(p)-log(log(p))))/2)/(sqrt(8*pi)))
+reject_null_CLX <- (p_value_CLX < alpha)
+
+#### Combine testing results by the proposed test and CLX
+res <- cbind.data.frame(method = c("Proposed test", "Cai (2013)"),
+                        `p-value` = c(p_value, p_value_CLX),
+                        `Reject H0 at alpha` = c(reject_null, reject_null_CLX),
+                        `alpha` = rep(alpha, 2))
+return(res)
+}
+
+```
+
+
+
+#### Verify simulation results based on M1 and M2 on D1
+
+##### M1 on D1
+
+```{r}
+M1D1 <- function(p = 80, n = 45, m = 45, rep = 100){
+  bb = Sys.time()  
+  
+  
+  D <- diag(runif(p, 0.5, 2.5))
+  D.half <- sqrt(D)
+  q <- ceiling(floor(p/10)); q.lower <- 10*(q-1)+1; q.upper <- 10*q
+  A <- matrix(0, p, p)
+  for(k in 1:p){
+    for(l in 1:p){
+      if(k==l){
+        A[k, l] <- 1
+      }else{
+        if(q.lower <= k & k <= q.upper & q.lower <= l & l <= q.upper){
+          A[k, l] <- 0.55
+        }
+      }
+    }
+  }
+  Sigma.star <- D.half%*%A%*%D.half
+  
+  eigen.decomp <- eigen(Sigma.star)
+  V <- eigen.decomp$vectors
+  L <- diag(eigen.decomp$values)
+  Sigma.star.half <- V%*%sqrt(L)%*%t(V)
+  
+  
+  SHAPE <- 4; SCALE = 10
+  #var.Z <- SHAPE*SCALE^2
+  # hist(rgamma(500, shape = SHAPE, scale = SCALE), prob = T) # heavy tail
+  # var(rgamma(500, shape = SHAPE, scale = SCALE))
+  
+  dat.gen <- function(){
+    XX <- c()
+    for(i in 1:n){
+      Z.X <- rgamma(p, shape = SHAPE, scale = SCALE)
+      XX <- rbind(XX, as.vector(Sigma.star.half%*%Z.X))
+    }
+    YY <- c()
+    for(j in 1:m){
+      Z.Y <- rgamma(p, shape = SHAPE, scale = SCALE)
+      YY <- rbind(YY, as.vector(Sigma.star.half%*%Z.Y))
+    }
+    return(list(x = XX, y = YY))
+  }
+  
+  
+  res <- 1:rep %>%
+    map(~dat.gen()) %>%
+    map(~Simulate(.x$x, .x$y, alpha = 0.05, B = 1500)$`Reject H0 at alpha`) %>%
+    rlist::list.rbind()
+  
+  res <- apply(res, 2, mean) 
+  ee = Sys.time()
+  # ee-bb # Time difference of 1.205695 mins when rep = 100
+  
+  #res # empirical alpha for the proposed test and CLX
+  
+  
+  
+  
+  ########################### Power part
+  bb1 <- Sys.time()
+  random.idx <- sample(1:(p*(p-1)/2 + p), p*(p-1)/2 + p, replace = F)
+  no.Qnon0.half <- ceiling(floor(0.05*p)*0.5)
+  no.Q0.half <- p*(p-1)/2 + p - no.Qnon0.half
+  tau <- 8*max(max(diag(Sigma.star)), sqrt(log(p)))
+  Qnon0.half <- runif(no.Qnon0.half, tau/2, 3*tau/2)
+  Q.upper <- c(rep(0, no.Q0.half), Qnon0.half)[random.idx]
+  
+  Q.idx <- expand.grid(kk = 1:p, ll = 1:p) 
+  Q.upper.df <- Q.idx %>%
+    dplyr::filter(kk<=ll)
+  Q.upper.df$value <- Q.upper
+  Q.idx <- Q.idx %>%
+    left_join(Q.upper.df, by = c("kk", "ll")) %>%
+    mutate(value = if_else(is.na(value), max(Q.upper)+ 100, value)) %>%
+    arrange(kk, ll)
+  Q <- matrix(Q.idx$value, p, p, byrow = T)
+  for(k in 1:p){
+    for(l in 1:p){
+      if(k>l){Q[k,l] <- Q[l,k]}
+    }
+  }
+  
+  lambda0 <- abs(min(min(eigen(Sigma.star+Q)$values), min(eigen(Sigma.star)$values))) + 0.05
+  Sigma.star1 <- Sigma.star + diag(rep(lambda0, p))
+  Sigma.star2 <- Sigma.star + Q + diag(rep(lambda0, p)) 
+  
+  
+  eigen.decomp1 <- eigen(Sigma.star1)
+  V1 <- eigen.decomp1$vectors
+  L1 <- diag(eigen.decomp1$values)
+  Sigma.star1.half <- V1%*%sqrt(L1)%*%t(V1)
+  
+  eigen.decomp2 <- eigen(Sigma.star2)
+  V2 <- eigen.decomp2$vectors
+  L2 <- diag(eigen.decomp2$values)
+  Sigma.star2.half <- V2%*%sqrt(L2)%*%t(V2)
+  
+  
+  
+  dat.gen.alternative <- function(){
+    XX <- c()
+    for(i in 1:n){
+      Z.X <- rgamma(p, shape = SHAPE, scale = SCALE)
+      XX <- rbind(XX, as.vector(Sigma.star1.half%*%Z.X))
+    }
+    YY <- c()
+    for(j in 1:m){
+      Z.Y <- rgamma(p, shape = SHAPE, scale = SCALE)
+      YY <- rbind(YY, as.vector(Sigma.star2.half%*%Z.Y))
+    }
+    return(list(x = XX, y = YY))
+  }
+  
+  res1 <- 1:rep %>%
+    map(~dat.gen.alternative()) %>%
+    map(~Simulate(.x$x, .x$y, alpha = 0.05, B = 1500)$`Reject H0 at alpha`) %>%
+    rlist::list.rbind()
+  
+  res1 <- apply(res1, 2, mean) 
+  ee1 <- Sys.time()
+  
+  
+  return(list(SIZE = list(res, ee-bb),
+              POWER = list(res1, ee1-bb1)))
+}
+
+```
+
+##### M2 on D1
+
+```{r}
+M2D1 <- function(p = 80, n = 45, m = 45, rep = 100){
+bb = Sys.time()  
+Sigma.star <- matrix(0, p, p)
+for(k in 1:p){
+  for(l in 1:p){
+    Sigma.star[k, l] <- 0.99^((abs(k-l))^(1/3))
+  }
+}
+eigen.decomp <- eigen(Sigma.star)
+V <- eigen.decomp$vectors
+L <- diag(eigen.decomp$values)
+Sigma.star.half <- V%*%sqrt(L)%*%t(V)
+
+
+SHAPE <- 4; SCALE = 10
+#var.Z <- SHAPE*SCALE^2
+# hist(rgamma(500, shape = SHAPE, scale = SCALE), prob = T) # heavy tail
+# var(rgamma(500, shape = SHAPE, scale = SCALE))
+
+dat.gen <- function(){
+XX <- c()
+for(i in 1:n){
+Z.X <- rgamma(p, shape = SHAPE, scale = SCALE)
+XX <- rbind(XX, as.vector(Sigma.star.half%*%Z.X))
+}
+YY <- c()
+for(j in 1:m){
+Z.Y <- rgamma(p, shape = SHAPE, scale = SCALE)
+YY <- rbind(YY, as.vector(Sigma.star.half%*%Z.Y))
+}
+return(list(x = XX, y = YY))
+}
+
+
+res <- 1:rep %>%
+  map(~dat.gen()) %>%
+  map(~Simulate(.x$x, .x$y, alpha = 0.05, B = 1500)$`Reject H0 at alpha`) %>%
+  rlist::list.rbind()
+
+res <- apply(res, 2, mean) 
+ee = Sys.time()
+# ee-bb # Time difference of 1.205695 mins when rep = 100
+
+#res # empirical alpha for the proposed test and CLX
+
+
+
+
+########################### Power part
+bb1 <- Sys.time()
+random.idx <- sample(1:(p*(p-1)/2 + p), p*(p-1)/2 + p, replace = F)
+no.Qnon0.half <- ceiling(floor(0.05*p)*0.5)
+no.Q0.half <- p*(p-1)/2 + p - no.Qnon0.half
+tau <- 8*max(max(diag(Sigma.star)), sqrt(log(p)))
+Qnon0.half <- runif(no.Qnon0.half, tau/2, 3*tau/2)
+Q.upper <- c(rep(0, no.Q0.half), Qnon0.half)[random.idx]
+
+Q.idx <- expand.grid(kk = 1:p, ll = 1:p) 
+Q.upper.df <- Q.idx %>%
+  dplyr::filter(kk<=ll)
+Q.upper.df$value <- Q.upper
+Q.idx <- Q.idx %>%
+  left_join(Q.upper.df, by = c("kk", "ll")) %>%
+  mutate(value = if_else(is.na(value), max(Q.upper)+ 100, value)) %>%
+  arrange(kk, ll)
+Q <- matrix(Q.idx$value, p, p, byrow = T)
+for(k in 1:p){
+  for(l in 1:p){
+    if(k>l){Q[k,l] <- Q[l,k]}
+  }
+}
+
+lambda0 <- abs(min(min(eigen(Sigma.star+Q)$values), min(eigen(Sigma.star)$values))) + 0.05
+Sigma.star1 <- Sigma.star + diag(rep(lambda0, p))
+Sigma.star2 <- Sigma.star + Q + diag(rep(lambda0, p)) 
+
+
+eigen.decomp1 <- eigen(Sigma.star1)
+V1 <- eigen.decomp1$vectors
+L1 <- diag(eigen.decomp1$values)
+Sigma.star1.half <- V1%*%sqrt(L1)%*%t(V1)
+
+eigen.decomp2 <- eigen(Sigma.star2)
+V2 <- eigen.decomp2$vectors
+L2 <- diag(eigen.decomp2$values)
+Sigma.star2.half <- V2%*%sqrt(L2)%*%t(V2)
+
+
+
+dat.gen.alternative <- function(){
+XX <- c()
+for(i in 1:n){
+Z.X <- rgamma(p, shape = SHAPE, scale = SCALE)
+XX <- rbind(XX, as.vector(Sigma.star1.half%*%Z.X))
+}
+YY <- c()
+for(j in 1:m){
+Z.Y <- rgamma(p, shape = SHAPE, scale = SCALE)
+YY <- rbind(YY, as.vector(Sigma.star2.half%*%Z.Y))
+}
+return(list(x = XX, y = YY))
+}
+
+res1 <- 1:rep %>%
+  map(~dat.gen.alternative()) %>%
+  map(~Simulate(.x$x, .x$y, alpha = 0.05, B = 1500)$`Reject H0 at alpha`) %>%
+  rlist::list.rbind()
+
+res1 <- apply(res1, 2, mean) 
+ee1 <- Sys.time()
+
+
+return(list(SIZE = list(res, ee-bb),
+            POWER = list(res1, ee1-bb1)))
+}
+```
+
+```{r}
+res1.M1D1.1 <- M1D1(p = 80, n = 45, m = 45, rep = 100) # 3 min taken for rep = 100
+res2.M1D1.1 <- M1D1(p = 280, n = 45, m = 45, rep = 100) # 15 min taken for rep = 100
+res1.M1D1.2 <- M1D1(p = 80, n = 60, m = 80, rep = 100) # 3 min taken for rep = 100
+res2.M1D1.2 <- M1D1(p = 280, n = 60, m = 80, rep = 100) # 15 min taken for rep = 100
+
+res1.M2D1.1 <- M2D1(p = 80, n = 45, m = 45, rep = 100) # 3 min taken for rep = 100
+res2.M2D1.1 <- M2D1(p = 280, n = 45, m = 45, rep = 100) # 15 min taken for rep = 100
+res1.M2D1.2 <- M2D1(p = 80, n = 60, m = 80, rep = 100) # 3 min taken for rep = 100
+res2.M2D1.2 <- M2D1(p = 280, n = 60, m = 80, rep = 100) # 15 min taken for rep = 100
+
+yaml::write_yaml(res1.M1D1.1, "./res1.M1D1.1.yaml")
+yaml::write_yaml(res2.M1D1.1, "./res2.M1D1.1.yaml")
+yaml::write_yaml(res1.M1D1.2, "./res1.M1D1.2.yaml")
+yaml::write_yaml(res2.M1D1.2, "./res2.M1D1.2.yaml")
+
+yaml::write_yaml(res1.M2D1.1, "./res1.M2D1.1.yaml")
+yaml::write_yaml(res2.M2D1.1, "./res2.M2D1.1.yaml")
+yaml::write_yaml(res1.M2D1.2, "./res1.M2D1.2.yaml")
+yaml::write_yaml(res2.M2D1.2, "./res2.M2D1.2.yaml")
+
+
+
+
+res3.M1D1.1 <- M1D1(p = 500, n = 45, m = 45, rep = 100) # 3 min taken for rep = 100
+res4.M1D1.1 <- M1D1(p = 1000, n = 45, m = 45, rep = 100) # 15 min taken for rep = 100
+res3.M1D1.2 <- M1D1(p = 500, n = 60, m = 80, rep = 100) # 3 min taken for rep = 100
+res4.M1D1.2 <- M1D1(p = 1000, n = 60, m = 80, rep = 100) # 15 min taken for rep = 100
+
+res3.M2D1.1 <- M2D1(p = 500, n = 45, m = 45, rep = 100) # 3 min taken for rep = 100
+res4.M2D1.1 <- M2D1(p = 1000, n = 45, m = 45, rep = 100) # 15 min taken for rep = 100
+res3.M2D1.2 <- M2D1(p = 500, n = 60, m = 80, rep = 100) # 3 min taken for rep = 100
+res4.M2D1.2 <- M2D1(p = 1000, n = 60, m = 80, rep = 100) # 15 min taken for rep = 100
+
+yaml::write_yaml(res3.M1D1.1, "./res3.M1D1.1.yaml")
+yaml::write_yaml(res4.M1D1.1, "./res4.M1D1.1.yaml")
+yaml::write_yaml(res3.M1D1.2, "./res3.M1D1.2.yaml")
+yaml::write_yaml(res4.M1D1.2, "./res4.M1D1.2.yaml")
+
+yaml::write_yaml(res3.M2D1.1, "./res3.M2D1.1.yaml")
+yaml::write_yaml(res4.M2D1.1, "./res4.M2D1.1.yaml")
+yaml::write_yaml(res3.M2D1.2, "./res3.M2D1.2.yaml")
+yaml::write_yaml(res4.M2D1.2, "./res4.M2D1.2.yaml")
+
+
+```
+
+
+
+
+
+
+##### Application 1
+
+```{r echo = F, message = F}
+library(HDtest)
+library(reshape2)
+
+data(GO26, package = "HDtest") # GO:0016032, it is about viral reproduction.
+
+
+cat("The number of people from healthy group is n = 20.\n")
+cat("The number of people from patient group is m = 88.\n")
+
+cat("GO:0016032, it is about viral reproduction\n")
+cat(paste("The number of genes, p, is equal to ", ncol(GO26$X[, -1]), ".\n", sep = ""))
+cat("Sample correlation from healty grous\n")
+melted_covmat <- melt(cor(GO26$X[, -1]))
+ggplot(data = melted_covmat, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low="green", mid="yellow", high="red", 
+                       midpoint=0, limits=c(-1, 1)) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size = 1)) 
+cat("Sample correlation from asthma grous\n")
+melted_covmat <- melt(cor(GO26$Y[, -1]))
+ggplot(data = melted_covmat, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low="green", mid="yellow", high="red", 
+                       midpoint=0, limits=c(-1, 1)) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size = 1)) 
+cat("Difference of sample covariances between two groups")
+melted_covmat <- melt(cov(GO26$X[, -1])-cov(GO26$Y[, -1]))
+ggplot(data = melted_covmat, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low="green", mid="yellow", high="red", 
+                       midpoint=median(melted_covmat$value), limits=c(min(melted_covmat$value), max(melted_covmat$value))) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size = 1))
+
+Simulate(GO26$X[, -1], GO26$Y[, -1], alpha = 0.05, B = 1500)
+```
+
+##### Application 2
+
+```{r echo = F, message = F}
+data(GO54, package = "HDtest") # GO:0034080, it is about CenH3-containing nucleosome assembly at centromere.
+
+
+cat("The number of people from healthy group is n = 20.\n")
+cat("The number of people from patient groups is m = 88.\n")
+
+cat("GO:0034080, it is about CenH3-containing nucleosome assembly at centromere.\n")
+cat(paste("The number of genes, p, is equal to ", ncol(GO54$X[, -1]), ".\n", sep = ""))
+cat("Sample correlation from healty group\n")
+melted_covmat <- melt(cor(GO54$X[, -1]))
+ggplot(data = melted_covmat, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low="green", mid="yellow", high="red", 
+                       midpoint=0, limits=c(-1, 1)) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size = 1)) 
+cat("Sample correlation from asthma group\n")
+melted_covmat <- melt(cor(GO54$Y[, -1]))
+ggplot(data = melted_covmat, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low="green", mid="yellow", high="red", 
+                       midpoint=0, limits=c(-1, 1)) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size = 1)) 
+cat("Difference of sample covariances between two groups")
+melted_covmat <- melt(cov(GO54$X[, -1])-cov(GO54$Y[, -1]))
+ggplot(data = melted_covmat, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low="green", mid="yellow", high="red", 
+                       midpoint=median(melted_covmat$value), limits=c(min(melted_covmat$value), max(melted_covmat$value))) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size = 1))
+
+Simulate(GO54$X[, -1], GO54$Y[, -1], alpha = 0.05, B = 1500)
+```
